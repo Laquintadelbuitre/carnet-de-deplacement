@@ -546,9 +546,73 @@ function tasksPanel(next){
 
 function tog(item, col, k, label){ return `<button class="tog ${item[k] ? 'on' : 'off'}" data-act="toggle" data-col="${col}" data-id="${item.id}" data-k="${k}" title="Cliquer pour changer">${item[k] ? '✓' : '✗'} ${label}</button>`; }
 
+/* ---------- Ajout d'une liste d'enfants ---------- */
+function parseListe(txt){
+  const out = [];
+  for (let line of txt.split(/\r?\n/)) {
+    line = line.replace(/^\s*(\d+[.)-]?|[-•*])\s+/, '').trim();
+    if (!line) continue;
+    let prenom = '', nom = '', categorie = '';
+    const parts = line.split(/\t|;|,/).map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      [prenom, nom] = parts;
+      const cat = parts.slice(2).find(p => CATS.some(c => c.toLowerCase() === p.toLowerCase()));
+      if (cat) categorie = CATS.find(c => c.toLowerCase() === cat.toLowerCase());
+      if (prenom === prenom.toUpperCase() && nom !== nom.toUpperCase()) [prenom, nom] = [nom, prenom];
+    } else {
+      const w = line.split(/\s+/);
+      const isUp = s => /\p{L}/u.test(s) && s === s.toUpperCase();
+      const up = w.filter(isUp);
+      if (up.length && up.length < w.length) { nom = up.join(' '); prenom = w.filter(x => !isUp(x)).join(' '); }
+      else { prenom = w[0]; nom = w.slice(1).join(' '); }
+    }
+    const cap = s => s.toLowerCase().replace(/(^|[\s'-])\p{L}/gu, m => m.toUpperCase());
+    out.push({prenom: cap(prenom), nom: nom.toUpperCase(), categorie});
+  }
+  return out;
+}
+function openBulk(){
+  const ov = $('#ov');
+  ov.innerHTML = `<form class="sheet" id="bulk" novalidate>
+    <header><h2>Ajouter une liste d’enfants</h2><button type="button" class="x" data-close aria-label="Fermer">×</button></header>
+    <div class="fg">
+      <div class="fd"><label for="b_txt">Un enfant par ligne</label>
+        <textarea id="b_txt" style="min-height:220px" placeholder="Lucas Martin&#10;Inès Benali&#10;DUPONT Noah&#10;…"></textarea>
+        <span class="hint">Tapez « Prénom Nom » ou « NOM Prénom », ou collez directement les colonnes d’un tableur (prénom, nom, catégorie). Les autres informations se complètent plus tard.</span></div>
+      <div class="fd half"><label for="b_cat">Catégorie pour tous</label><select id="b_cat"><option value="">—</option>${CATS.map(c => `<option${c === S.trip.categorie ? ' selected' : ''}>${c}</option>`).join('')}</select></div>
+      <div class="fd half"><label>Aperçu</label><span class="hint" id="b_prev" style="font-size:14px;padding-top:8px">Aucun nom saisi</span></div>
+    </div>
+    <footer><span class="sp"></span><button type="button" class="btn ghost" data-close>Annuler</button><button class="btn primary" type="submit" id="b_ok" disabled>Ajouter</button></footer></form>`;
+  ov.hidden = false;
+  const ta = $('#b_txt'); ta.focus();
+  const existing = new Set(S.enfants.map(k => (k.prenom + '|' + k.nom).toLowerCase()));
+  const compute = () => {
+    const list = parseListe(ta.value), seenP = new Set(existing);
+    const fresh = list.filter(k => { const key = (k.prenom + '|' + k.nom).toLowerCase(); if (seenP.has(key)) return false; seenP.add(key); return true; });
+    const dup = list.length - fresh.length;
+    $('#b_prev').textContent = list.length ? `${fresh.length} enfant(s) à ajouter${dup ? ` · ${dup} doublon(s) ignoré(s)` : ''}` : 'Aucun nom saisi';
+    $('#b_ok').disabled = !fresh.length;
+    $('#b_ok').textContent = fresh.length ? `Ajouter ${fresh.length} enfant(s)` : 'Ajouter';
+    return fresh;
+  };
+  ta.oninput = compute;
+  $('#bulk').onsubmit = e => {
+    e.preventDefault();
+    const fresh = compute(), defCat = $('#b_cat').value, seen = new Set();
+    let n = 0;
+    for (const k of fresh) {
+      const key = (k.prenom + '|' + k.nom).toLowerCase(); if (seen.has(key)) continue; seen.add(key);
+      S.enfants.push({id: 'id' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), prenom:k.prenom, nom:k.nom, categorie:k.categorie || defCat,
+        naissance:'', parent:'', autorisation:false, fiche:false, licence:false, paye:'', maillot:'', hebergement:'', vehicule:'', sante:'', notes:''});
+      n++;
+    }
+    closeForm(); changed(); toast(`${n} enfant(s) ajouté(s). Complétez leurs fiches quand vous aurez les infos.`);
+  };
+}
+
 function vEnfants(c){
-  const head = `<div class="toolbar"><div style="margin-right:auto"><h2>Enfants</h2><p class="sub">${c.kids.length} inscrit(s) · cliquez sur un document pour le cocher</p></div><button class="btn primary" data-act="add" data-col="enfants">Ajouter un enfant</button></div>`;
-  if (!c.kids.length) return head + empty('Aucun enfant inscrit', 'Ajoutez chaque joueur qui part : documents, paiement, hébergement et transport.', '<button class="btn primary" data-act="add" data-col="enfants">Ajouter un enfant</button>');
+  const head = `<div class="toolbar"><div style="margin-right:auto"><h2>Enfants</h2><p class="sub">${c.kids.length} inscrit(s) · cliquez sur un nom pour compléter sa fiche, sur un document pour le cocher</p></div><button class="btn" data-act="bulk">Ajouter une liste</button><button class="btn primary" data-act="add" data-col="enfants">Ajouter un enfant</button></div>`;
+  if (!c.kids.length) return head + empty('Aucun enfant inscrit', 'Collez la liste de vos joueurs d’un coup, puis complétez documents, paiement, hébergement et transport au fur et à mesure.', '<button class="btn primary" data-act="bulk">Ajouter une liste d’enfants</button> <button class="btn" data-act="add" data-col="enfants">Ajouter un seul enfant</button>');
   return head + `<div class="tw"><table><thead><tr><th>Enfant</th><th>Documents</th><th class="num">Paiement</th><th>Hébergement</th><th>Transport</th><th>Parent</th></tr></thead><tbody>${c.kids.map(k => {
     const p = num(k.paye), st = !c.part ? '' : p >= c.part ? 'ok' : p > 0 ? 'warn' : 'bad';
     const h = c.heb(k.hebergement), v = c.veh(k.vehicule), pa = c.par(k.parent);
@@ -683,6 +747,7 @@ document.addEventListener('click', async e => {
   else if (act === 'copy') copyText(b.dataset.what);
   else if (act === 'tpl') { const have = new Set(S.taches.map(t => t.tache)); for (const tk of TEMPLATE) if (!have.has(tk)) await put('taches', null, {tache:tk, echeance:'', responsable:'', fait:false}); toast('Liste type ajoutée.'); }
   else if (act === 'settings') openSettings();
+  else if (act === 'bulk') openBulk();
   else if (act === 'push') { closeForm(); await pushSheets(); toast(syncLabel()); }
   else if (act === 'export') exportFile();
 });
