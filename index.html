@@ -1,7 +1,15 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Carnet de déplacement</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap">
 <style>
+[hidden]{display:none!important}
+body{margin:0}
+img{max-width:100%}
 /* Layout: bande "pelouse" en tête avec compte à rebours, onglets, puis contenu de travail en tableaux et cartes. Alertes en cartons jaunes / rouges. */
 :root{
   --bg:#f2f4ef; --surface:#ffffff; --sunk:#e8ece5; --ink:#17221b; --muted:#5b6a60; --line:#d6ddd3;
@@ -161,7 +169,8 @@ select.assign{border:1px dashed var(--line);background:transparent;border-radius
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:6px;font-size:14px;z-index:30;max-width:calc(100% - 32px)}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:up .18s ease-out}@keyframes up{from{transform:translateY(10px);opacity:.6}}}
 </style>
-
+</head>
+<body>
 <header class="band">
   <div class="band-in">
     <div id="tripHead"></div>
@@ -688,3 +697,6 @@ draw();
 if (cfg.url && cfg.cle) { if (dirty) pushSheets(); else pullSheets(); }
 window.addEventListener('beforeunload', e => { if (cfg.url && dirty) { e.preventDefault(); e.returnValue = ''; } });
 </script>
+
+</body>
+</html>
