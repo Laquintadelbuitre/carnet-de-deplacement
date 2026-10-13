@@ -43,6 +43,11 @@ h1,h2,h3{font-family:var(--f-display);font-weight:700;text-wrap:balance;margin:0
 .band .meta{opacity:.9;margin-top:4px;font-size:14px}
 .band .editlink{background:none;border:1px solid rgba(255,255,255,.4);color:var(--on-pitch);border-radius:4px;padding:4px 10px;font-size:13px;cursor:pointer;margin-top:8px}
 .band .editlink:hover{background:rgba(255,255,255,.12)}
+.switch{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,.2)}
+.switch .eyebrow{margin-right:2px}
+.switch .editlink{margin-top:0}
+#tripSel{background:rgba(0,0,0,.18);color:var(--on-pitch);border:1px solid rgba(255,255,255,.45);border-radius:4px;padding:5px 8px;font-size:14px;font-weight:600;max-width:100%;min-width:0;cursor:pointer}
+#tripSel option{background:var(--surface);color:var(--ink)}
 .count{text-align:right;font-family:var(--f-display)}
 .count b{display:block;font-size:clamp(44px,8vw,64px);line-height:.9;font-weight:700}
 .count span{text-transform:uppercase;letter-spacing:.1em;font-size:12px;opacity:.8}
@@ -68,6 +73,7 @@ main{max-width:1100px;margin:0 auto;padding-inline:16px;padding-block:20px 60px;
 .btn.danger[data-armed]{background:var(--red);color:#fff}
 .btn.ghost{background:transparent}
 .btn.sm{padding:4px 9px;font-size:13px}
+a.btn{text-decoration:none;color:inherit;display:inline-block}
 
 /* Chiffres clés */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
@@ -115,6 +121,15 @@ td.num,th.num{text-align:right}
 .grid-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
 .slot{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .slot.over{border-color:var(--red)}
+.slot.trip.current{border-color:var(--pitch);box-shadow:0 0 0 1px var(--pitch)}
+.slot.trip.faded{opacity:.7}
+.slot.trip>.btn{align-self:flex-start;margin-top:auto}
+.cdmini{font-family:var(--f-display);font-weight:700;font-size:22px;color:var(--link);white-space:nowrap}
+.tripstats{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;color:var(--muted)}
+.tripstats b{color:var(--ink);font-size:15px}
+.tripstats .late b{color:var(--red)}
+.mini{display:flex;gap:10px;align-items:center;font-size:13px;padding:3px 0}
+.mini .card{width:10px;height:14px;margin-top:0}
 .slot-h{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
 .slot-h h3{font-size:20px;line-height:1.15}
 .bar{height:8px;border-radius:4px;background:var(--sunk);overflow:hidden}
@@ -195,8 +210,17 @@ const full = p => p ? [p.prenom, p.nom].filter(Boolean).join(' ') || 'Sans nom' 
 const byName = (a, b) => (a.nom || '').localeCompare(b.nom || '', 'fr') || (a.prenom || '').localeCompare(b.prenom || '', 'fr');
 
 const COLS = ['enfants','parents','hebergements','vehicules','budget','taches'];
-const S = {trip:{}, enfants:[], parents:[], hebergements:[], vehicules:[], budget:[], taches:[]};
-let db = null, mode = 'loading', tab = 'apercu';
+const newId = () => 'id' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const blankTrip = trip => { const v = {id:newId(), trip:trip || {}}; COLS.forEach(c => v[c] = []); return v; };
+/* ALL = tous les voyages ; S = le voyage ouvert */
+let ALL = {voyages:[], actif:''}, S = null;
+function ensure(){
+  if (!ALL.voyages.length) ALL.voyages.push(blankTrip());
+  ALL.voyages.forEach(v => { v.trip = v.trip || {}; COLS.forEach(c => v[c] = v[c] || []); });
+  S = ALL.voyages.find(v => v.id === ALL.actif) || ALL.voyages[0];
+  ALL.actif = S.id;
+}
+let mode = 'loading', tab = 'apercu';
 try { const h = location.hash.slice(1); if (h) tab = h; } catch(e) {}
 
 const TABS = [
@@ -210,10 +234,12 @@ let cfg = {url:'https://script.google.com/macros/s/AKfycbyxylh_7dn1jSv4aCyW-s7Ut
 try { const sc = JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); if (sc.url) cfg.url = sc.url; if (sc.cle) cfg.cle = sc.cle; } catch(e) {}
 try {
   const saved = JSON.parse(localStorage.getItem(DATA_KEY) || 'null');
-  if (saved && saved.S) { Object.assign(S, saved.S); dirty = !!saved.dirty; }
+  if (saved && saved.ALL) { ALL = saved.ALL; dirty = !!saved.dirty; }
+  else if (saved && saved.S) { ALL = {voyages:[{id:'v1', ...saved.S}], actif:'v1'}; dirty = !!saved.dirty; }  /* ancienne version à un seul voyage */
 } catch(e) {}
+ensure();
 
-function saveLocal(){ try { localStorage.setItem(DATA_KEY, JSON.stringify({S, dirty})); } catch(e) {} }
+function saveLocal(){ try { localStorage.setItem(DATA_KEY, JSON.stringify({ALL, dirty})); } catch(e) {} }
 function changed(){
   dirty = true; rev++; saveLocal(); render();
   if (cfg.url && cfg.cle) { sync = 'pending'; clearTimeout(timer); timer = setTimeout(pushSheets, 1500); }
@@ -221,7 +247,7 @@ function changed(){
 function put(col, id, data){
   const arr = S[col];
   if (id) { const i = arr.findIndex(x => x.id === id); if (i > -1) arr[i] = {id, ...data}; }
-  else arr.push({id: 'id' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ...data});
+  else arr.push({id: newId(), ...data});
   changed();
 }
 function del(col, id){ S[col] = S[col].filter(x => x.id !== id); changed(); }
@@ -241,17 +267,40 @@ function normRow(r, fields){
   }
   return o;
 }
+/* Format échangé avec Sheets : un onglet « voyages » + une colonne « voyage » dans chaque autre onglet */
 function fromSheets(d){
-  for (const c of COLS) S[c] = (d[c] || []).filter(r => r.id).map(r => ({id:String(r.id), ...normRow(r, F[c].fields)}));
-  S.trip = normRow(d.trip || {}, F.trip.fields);
+  let vs = Array.isArray(d.voyages)
+    ? d.voyages.filter(v => v.id).map(v => ({id:String(v.id), trip:{...normRow(v, F.trip.fields), lien:String(v.lien || '')}}))
+    : [{id:'v1', trip:normRow(d.trip || {}, F.trip.fields)}];
+  if (!vs.length) vs = [{id:'v1', trip:{}}];
+  vs.forEach(v => COLS.forEach(c => v[c] = []));
+  const map = Object.fromEntries(vs.map(v => [v.id, v]));
+  for (const c of COLS) for (const r of (d[c] || [])) {
+    if (!r.id) continue;
+    (map[String(r.voyage || '')] || vs[0])[c].push({id:String(r.id), ...normRow(r, F[c].fields)});
+  }
+  ALL.voyages = vs;
+  ensure();
 }
+function wire(){
+  const body = {voyages: ALL.voyages.map(v => ({id:v.id, ...v.trip}))};
+  COLS.forEach(c => body[c] = ALL.voyages.flatMap(v => v[c].map(x => ({voyage:v.id, ...x}))));
+  return body;
+}
+const isEmptyAll = () => !ALL.voyages.some(v => v.trip.nom || COLS.some(c => v[c].length));
 async function pushSheets(){
   if (!cfg.url) return;
   clearTimeout(timer);
   const sent = rev; sync = 'saving'; render();
-  const body = {cle:cfg.cle, trip:S.trip};
-  COLS.forEach(c => body[c] = S[c]);
+  const body = {cle:cfg.cle, ...wire()};
   try {
+    /* Ne jamais envoyer plusieurs voyages à l'ancien script (il mélangerait tout) */
+    if (scriptV !== 2) {
+      const g = await (await fetch(getUrl())).json();
+      if (!g.ok) throw new Error(g.erreur === 'cle' ? 'cle' : 'serveur');
+      scriptV = g.version || 1;
+      if (scriptV !== 2) { sync = 'script'; render(); return; }
+    }
     const r = await fetch(cfg.url, {method:'POST', body:JSON.stringify(body)});
     const j = await r.json();
     if (!j.ok) throw new Error(j.erreur === 'cle' ? 'cle' : 'serveur');
@@ -259,27 +308,29 @@ async function pushSheets(){
     lastSync = new Date(); sync = dirty ? 'pending' : 'ok'; saveLocal();
     if (dirty) timer = setTimeout(pushSheets, 1500);
   } catch(e) { sync = e.message === 'cle' ? 'cle' : 'error'; }
-  render();
+  render();  if (document.querySelector('#ov [data-act="rmlien"]')) openLien();  /* met à jour l'état du lien affiché */
 }
 async function pullSheets(){
   if (!cfg.url) return false;
   sync = 'saving'; render();
   try {
-    const r = await fetch(cfg.url + (cfg.url.includes('?') ? '&' : '?') + 'cle=' + encodeURIComponent(cfg.cle));
-    const j = await r.json();
+    const j = await (await fetch(getUrl())).json();
     if (!j.ok) throw new Error(j.erreur === 'cle' ? 'cle' : 'serveur');
-    const vide = COLS.every(c => !(j[c] || []).length) && !Object.values(j.trip || {}).some(v => v !== '' && v != null);
-    const localPlein = COLS.some(c => S[c].length) || !!S.trip.nom;
-    if (vide && localPlein) { await pushSheets(); return true; }
-    fromSheets(j); dirty = false; lastSync = new Date(); sync = 'ok'; saveLocal();
+    scriptV = j.version || 1;
+    const vide = COLS.every(c => !(j[c] || []).length) && !(j.voyages || []).length && !Object.values(j.trip || {}).some(v => v !== '' && v != null);
+    if (vide && !isEmptyAll()) { await pushSheets(); return sync === 'ok'; }
+    fromSheets(j); dirty = false; lastSync = new Date(); saveLocal();
+    sync = scriptV === 2 ? 'ok' : 'script';
   } catch(e) { sync = e.message === 'cle' ? 'cle' : 'error'; }
   render();
   return sync === 'ok';
 }
+let scriptV = 0;
+const getUrl = () => cfg.url + (cfg.url.includes('?') ? '&' : '?') + 'cle=' + encodeURIComponent(cfg.cle);
 function syncLabel(){
   const h = lastSync ? lastSync.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '';
   return {local:'Enregistré dans ce navigateur uniquement', pending:'Modifications en attente d’envoi…', saving:'Synchronisation avec Google Sheets…',
-    ok:'Enregistré dans Google Sheets' + (h ? ' à ' + h : ''), error:'Google Sheets injoignable : données gardées dans ce navigateur', cle:'Clé refusée par Google Sheets'}[sync];
+    ok:'Enregistré dans Google Sheets' + (h ? ' à ' + h : ''), error:'Google Sheets injoignable : données gardées dans ce navigateur', cle:'Clé refusée par Google Sheets', script:'Script Google à mettre à jour'}[sync];
 }
 
 function openSettings(){
@@ -322,7 +373,7 @@ function openSettings(){
   };
 }
 function exportFile(){
-  const d = {trip:S.trip}; COLS.forEach(c => d[c] = S[c]);
+  const d = wire();
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], {type:'application/json'}));
   a.download = 'carnet-deplacement-' + today() + '.json';
@@ -330,33 +381,34 @@ function exportFile(){
 }
 
 /* ---------- Calculs ---------- */
-function calc(){
-  const kids = [...S.enfants].sort(byName);
-  const heb = id => S.hebergements.find(h => h.id === id);
-  const veh = id => S.vehicules.find(v => v.id === id);
-  const par = id => S.parents.find(p => p.id === id);
+function calc(T = S){
+  const kids = [...T.enfants].sort(byName);
+  const heb = id => T.hebergements.find(h => h.id === id);
+  const veh = id => T.vehicules.find(v => v.id === id);
+  const par = id => T.parents.find(p => p.id === id);
   const noHeb = kids.filter(k => !heb(k.hebergement));
   const noVeh = kids.filter(k => !veh(k.vehicule));
-  const accomp = S.parents.filter(p => p.accompagne);
-  const places = sum(S.vehicules, v => num(v.places));
-  const lits = sum(S.hebergements, h => num(h.capacite));
-  const part = num(S.trip.participation);
+  const accomp = T.parents.filter(p => p.accompagne);
+  const places = sum(T.vehicules, v => num(v.places));
+  const lits = sum(T.hebergements, h => num(h.capacite));
+  const part = num(T.trip.participation);
   const attendu = part * kids.length;
   const encaisse = sum(kids, k => num(k.paye));
-  const dep = S.budget.filter(b => b.sens !== 'Recette');
-  const rec = S.budget.filter(b => b.sens === 'Recette');
-  const depHeb = sum(S.hebergements, h => num(h.cout));
-  const depVeh = sum(S.vehicules, v => num(v.cout));
+  const dep = T.budget.filter(b => b.sens !== 'Recette');
+  const rec = T.budget.filter(b => b.sens === 'Recette');
+  const depHeb = sum(T.hebergements, h => num(h.cout));
+  const depVeh = sum(T.vehicules, v => num(v.cout));
   const depenses = sum(dep, b => num(b.montant)) + depHeb + depVeh;
   const recAutres = sum(rec, b => num(b.montant));
   const recettes = recAutres + attendu;
-  const hebOcc = h => kids.filter(k => k.hebergement === h.id).length + S.parents.filter(p => p.hebergement === h.id).length;
+  const hebOcc = h => kids.filter(k => k.hebergement === h.id).length + T.parents.filter(p => p.hebergement === h.id).length;
   const vehOcc = v => kids.filter(k => k.vehicule === v.id).length;
-  const lateTasks = S.taches.filter(t => !t.fait && t.echeance && t.echeance < today());
+  const lateTasks = T.taches.filter(t => !t.fait && t.echeance && t.echeance < today());
   return {kids, heb, veh, par, noHeb, noVeh, accomp, places, lits, part, attendu, encaisse, dep, rec, depHeb, depVeh, depenses, recAutres, recettes, hebOcc, vehOcc, lateTasks};
 }
 
 /* ---------- Formulaires ---------- */
+const STATUTS = ['En préparation','Confirmé','Terminé','Annulé'];
 const CATS = ['U7','U9','U11','U13','U15','U17','U19','Seniors','Autre'];
 const optParents = () => [...S.parents].sort(byName).map(p => ({v:p.id, l:full(p)}));
 const optHeb = () => S.hebergements.map(h => ({v:h.id, l:h.nom || 'Sans nom'}));
@@ -364,6 +416,7 @@ const optVeh = () => S.vehicules.map(v => ({v:v.id, l:v.nom || 'Sans nom'}));
 const F = {
   trip: {title:'Le déplacement', fields:[
     {k:'nom', l:'Nom du déplacement', req:1, ph:'Tournoi de Pâques à Nantes'},
+    {k:'statut', l:'Statut', t:'select', o:() => STATUTS, half:1, noEmpty:1},
     {k:'destination', l:'Destination', half:1}, {k:'categorie', l:'Équipe / catégorie', half:1, ph:'U11'},
     {k:'depart', l:'Date de départ', t:'date', half:1}, {k:'retour', l:'Date de retour', t:'date', half:1},
     {k:'rdv', l:'Rendez-vous de départ', ph:'Stade municipal, samedi 7h30'},
@@ -435,7 +488,7 @@ function openForm(kind, item, preset){
     <header><h2>${item || kind === 'trip' ? 'Modifier' : 'Ajouter'} : ${esc(sch.title.toLowerCase())}</h2><button type="button" class="x" data-close aria-label="Fermer">×</button></header>
     <div class="fg">${sch.fields.map(f => fieldHtml(f, data)).join('')}</div>
     <p class="err" id="ferr" hidden></p>
-    <footer>${item && kind !== 'trip' ? '<button type="button" class="btn danger" id="delbtn">Supprimer</button>' : ''}<span class="sp"></span>
+    <footer>${item && kind !== 'trip' ? '<button type="button" class="btn danger" id="delbtn">Supprimer</button>' : kind === 'trip' ? '<button type="button" class="btn danger" id="delbtn">Supprimer ce voyage</button>' : ''}<span class="sp"></span>
       <button type="button" class="btn ghost" data-close>Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer></form>`;
   ov.hidden = false;
   const first = ov.querySelector('input,select,textarea'); if (first) first.focus();
@@ -454,9 +507,137 @@ function openForm(kind, item, preset){
   };
   const db_ = ov.querySelector('#delbtn');
   if (db_) db_.onclick = () => {
-    if (!db_.dataset.armed) { db_.dataset.armed = 1; db_.textContent = 'Confirmer la suppression'; return; }
-    del(kind, item.id); closeForm();
+    if (!db_.dataset.armed) {
+      db_.dataset.armed = 1;
+      db_.textContent = kind === 'trip' ? `Confirmer : supprimer ce voyage et ses ${S.enfants.length} enfant(s), parents, budget…` : 'Confirmer la suppression';
+      return;
+    }
+    if (kind === 'trip') deleteTrip(); else del(kind, item.id);
+    closeForm();
   };
+}
+
+/* ---------- Lien parents (une page par voyage, servie par le script Google) ---------- */
+function jeton(){
+  const a = new Uint8Array(18); crypto.getRandomValues(a);
+  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  return Array.from(a, x => abc[x % abc.length]).join('');
+}
+function copyOut(txt, ok){
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(() => toast(ok), () => showText(txt));
+  else showText(txt);
+}
+function openLien(){
+  const ov = $('#ov'), t = S.trip;
+  const url = t.lien && cfg.url ? cfg.url + '?p=' + t.lien : '';
+  const msg = url ? `Bonjour à tous, voici la page du déplacement « ${tripName(S)} »${t.depart ? ' (' + fdate(t.depart) + ')' : ''} : rendez-vous, voitures, hébergement. Elle est mise à jour au fur et à mesure.\n${url}` : '';
+  const ready = sync === 'ok';
+  let body;
+  if (!cfg.url) body = `<div class="fd"><p>Reliez d’abord le carnet à Google Sheets : c’est votre Google Sheet qui affiche la page des parents.</p></div>`;
+  else if (!t.lien) body = `<div class="fd"><p style="margin:0">Créez un lien à envoyer aux parents de <strong>${esc(tripName(S))}</strong>. Ils verront seulement ce voyage, sans pouvoir modifier quoi que ce soit ni voir vos autres voyages.</p></div>
+      <div class="fd"><label>Ce que les parents voient</label><span class="hint" style="font-size:14px">Dates, rendez-vous, contact d’urgence, participation, la répartition dans les voitures (avec le nom et le téléphone du conducteur), l’hébergement, les accompagnateurs et la liste des enfants (prénom et initiale).</span></div>
+      <div class="fd"><label>Ce qu’ils ne voient jamais</label><span class="hint" style="font-size:14px">Infos santé, paiements, documents manquants, budget, tâches, téléphones des autres parents.</span></div>`;
+  else body = `<div class="fd"><label for="lienUrl">Lien parents de « ${esc(tripName(S))} »</label><input id="lienUrl" type="text" readonly value="${esc(url)}" onclick="this.select()">
+        ${ready ? '' : `<span class="hint" style="color:var(--red)">Le lien marchera dès que l’indicateur en haut affiche « Enregistré dans Google Sheets » (${esc(syncLabel())}).</span>`}</div>
+      <div class="fd"><label for="lienMsg">Message prêt à envoyer</label><textarea id="lienMsg" readonly style="min-height:110px">${esc(msg)}</textarea></div>
+      <div class="fd"><span class="hint">La page se met à jour toute seule quand vous modifiez le carnet. Si le lien circule trop, désactivez-le : l’ancien lien ne marchera plus et vous pourrez en créer un nouveau.</span></div>`;
+  ov.innerHTML = `<div class="sheet"><header><h2>Lien parents</h2><button class="x" data-close aria-label="Fermer">×</button></header>
+    <div class="fg">${body}</div>
+    <footer>${t.lien ? '<button class="btn danger sm" data-act="rmlien">Désactiver ce lien</button>' : ''}<span class="sp"></span>
+      ${!cfg.url ? '<button class="btn primary" data-act="settings">Relier à Google Sheets</button>'
+        : !t.lien ? '<button class="btn primary" data-act="mklien">Créer le lien</button>'
+        : `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Voir la page</a><button class="btn" data-act="cplien" data-txt="${esc(url)}">Copier le lien</button><button class="btn primary" data-act="cplien" data-txt="${esc(msg)}">Copier le message</button>`}
+    </footer></div>`;
+  ov.hidden = false;
+}
+
+/* ---------- Plusieurs voyages ---------- */
+const tripName = v => v.trip.nom || 'Nouveau déplacement';
+const tripOrder = (a, b) => {
+  const done = v => /Terminé|Annulé/.test(v.trip.statut || '') ? 1 : 0;
+  return done(a) - done(b) || (a.trip.depart || '9').localeCompare(b.trip.depart || '9') || tripName(a).localeCompare(tripName(b), 'fr');
+};
+function setTrip(id, toTab){
+  ALL.actif = id; ensure(); saveLocal();
+  tab = toTab || 'apercu';
+  try { history.replaceState(null, '', '#' + tab); } catch(_) {}
+  render(); window.scrollTo({top:0});
+}
+function deleteTrip(){
+  const name = tripName(S);
+  ALL.voyages = ALL.voyages.filter(v => v !== S);
+  ALL.actif = ''; ensure();
+  tab = 'voyages'; changed();
+  toast(`Voyage « ${name} » supprimé.`);
+}
+function openNewTrip(){
+  const ov = $('#ov'), others = [...ALL.voyages].sort(tripOrder);
+  ov.innerHTML = `<form class="sheet" id="nt" novalidate>
+    <header><h2>Nouveau voyage</h2><button type="button" class="x" data-close aria-label="Fermer">×</button></header>
+    <div class="fg">
+      <div class="fd"><label for="n_nom">Nom du déplacement *</label><input id="n_nom" type="text" placeholder="Tournoi de Pâques à Nantes"></div>
+      <div class="fd half"><label for="n_dest">Destination</label><input id="n_dest" type="text"></div>
+      <div class="fd half"><label for="n_cat">Équipe / catégorie</label><input id="n_cat" type="text" placeholder="U11"></div>
+      <div class="fd half"><label for="n_dep">Date de départ</label><input id="n_dep" type="date"></div>
+      <div class="fd half"><label for="n_ret">Date de retour</label><input id="n_ret" type="date"></div>
+      <div class="fd"><label for="n_src">Reprendre les participants d’un autre voyage</label>
+        <select id="n_src"><option value="">Non, partir d’une page blanche</option>${others.filter(v => v.enfants.length || v.parents.length).map(v => `<option value="${v.id}">${esc(tripName(v))} (${v.enfants.length} enfants, ${v.parents.length} parents)</option>`).join('')}</select>
+        <span class="hint">Copie les enfants et les parents avec leurs coordonnées, fiche sanitaire, licence et infos santé. Autorisations, paiements, places en voiture et en chambre repartent à zéro.</span></div>
+      <div class="fd chk"><input type="checkbox" id="n_tpl" checked><label for="n_tpl">Ajouter la liste type des tâches</label></div>
+    </div>
+    <p class="err" id="nerr" hidden></p>
+    <footer><span class="sp"></span><button type="button" class="btn ghost" data-close>Annuler</button><button class="btn primary" type="submit">Créer le voyage</button></footer></form>`;
+  ov.hidden = false; $('#n_nom').focus();
+  $('#nt').onsubmit = e => {
+    e.preventDefault();
+    const nom = $('#n_nom').value.trim();
+    if (!nom) { const er = $('#nerr'); er.textContent = 'Donnez un nom au voyage.'; er.hidden = false; return; }
+    const cat = $('#n_cat').value.trim();
+    const v = blankTrip({nom, statut:'En préparation', destination:$('#n_dest').value.trim(), categorie:cat,
+      depart:$('#n_dep').value, retour:$('#n_ret').value, rdv:'', participation:'', urgence:'', notes:''});
+    const src = ALL.voyages.find(x => x.id === $('#n_src').value);
+    if (src) {
+      const pmap = {};
+      v.parents = src.parents.map(p => { const id = newId(); pmap[p.id] = id;
+        return {...p, id, accompagne:false, hebergement:''}; });
+      v.enfants = src.enfants.map(k => ({...k, id:newId(), parent:pmap[k.parent] || '', categorie:k.categorie || cat,
+        autorisation:false, paye:'', hebergement:'', vehicule:''}));
+      v.trip.urgence = src.trip.urgence || '';
+    }
+    if ($('#n_tpl').checked) v.taches = TEMPLATE.map(t => ({id:newId(), tache:t, echeance:'', responsable:'', fait:false}));
+    ALL.voyages.push(v);
+    closeForm();
+    setTrip(v.id, src ? 'enfants' : 'apercu');
+    changed();
+    toast(src ? `Voyage créé avec ${v.enfants.length} enfant(s) et ${v.parents.length} parent(s).` : 'Voyage créé.');
+  };
+}
+function vVoyages(){
+  const vs = [...ALL.voyages].sort(tripOrder);
+  return `<div class="toolbar"><div style="margin-right:auto"><h2>Tous les voyages</h2><p class="sub">${vs.length} voyage(s) · cliquez sur un voyage pour l’ouvrir</p></div><button class="btn primary" data-act="newtrip">Nouveau voyage</button></div>
+  <div class="grid-cards">${vs.map(v => {
+    const c = calc(v), t = v.trip, n = c.kids.length;
+    const fini = /Terminé|Annulé/.test(t.statut || '');
+    const docs = c.kids.filter(k => !k.autorisation || !k.fiche || !k.licence).length;
+    const solde = c.recettes - c.depenses;
+    let cd = '';
+    if (t.depart && !fini) { const d = Math.round((new Date(t.depart + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 864e5); cd = d > 0 ? `J-${d}` : d === 0 ? 'Jour J' : ''; }
+    const pb = [];
+    if (c.noVeh.length) pb.push(['red', `${c.noVeh.length} sans transport`]);
+    if (c.noHeb.length && v.hebergements.length) pb.push(['red', `${c.noHeb.length} sans hébergement`]);
+    if (n && !v.hebergements.length) pb.push(['red', 'Pas d’hébergement']);
+    if (solde < 0) pb.push(['red', `Déficit ${eur(-solde)}`]);
+    if (docs) pb.push(['yellow', `${docs} dossier(s) incomplet(s)`]);
+    if (c.lateTasks.length) pb.push(['yellow', `${c.lateTasks.length} tâche(s) en retard`]);
+    return `<div class="slot trip ${v.id === S.id ? 'current' : ''} ${fini ? 'faded' : ''}">
+      <div class="slot-h"><div style="min-width:0"><div class="small">${esc(t.statut || 'En préparation')}${t.categorie ? ' · ' + esc(t.categorie) : ''}</div><h3>${esc(tripName(v))}</h3>
+        <div class="small">${[t.destination, t.depart && (fdate(t.depart) + (t.retour ? ' → ' + fdate(t.retour) : ''))].filter(Boolean).map(esc).join(' · ') || 'Destination et dates à renseigner'}</div></div>
+        ${cd ? `<span class="cdmini">${cd}</span>` : ''}</div>
+      <div class="tripstats"><span><b>${n}</b> enfants</span><span><b>${c.accomp.length}</b> adultes</span><span><b>${c.places}</b> places</span><span class="${solde < 0 ? 'late' : ''}"><b>${eur(solde)}</b> solde</span></div>
+      <div class="alerts">${pb.length ? pb.slice(0, 4).map(([lv, txt]) => `<div class="mini"><span class="card ${lv}"></span>${esc(txt)}</div>`).join('') : `<div class="mini"><span class="card green"></span>${n ? 'Tout est en ordre' : 'Aucun enfant inscrit'}</div>`}</div>
+      <button class="btn ${v.id === S.id ? '' : 'primary'}" data-trip="${v.id}">${v.id === S.id ? 'Voyage ouvert' : 'Ouvrir'}</button>
+    </div>`;
+  }).join('')}</div>`;
 }
 function closeForm(){ const ov = $('#ov'); ov.hidden = true; ov.innerHTML = ''; }
 
@@ -466,11 +647,19 @@ function render(){ if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw()
 
 function draw(){
   const c = calc(), t = S.trip;
-  $('#tripHead').innerHTML = `<div class="eyebrow">${esc(t.categorie ? 'Déplacement · ' + t.categorie : 'Carnet de déplacement')}</div>
+  const vs = [...ALL.voyages].sort(tripOrder);
+  $('#tripHead').innerHTML = `<div class="switch">
+      <label for="tripSel" class="eyebrow">Voyage</label>
+      <select id="tripSel">${vs.map(v => `<option value="${v.id}" ${v.id === S.id ? 'selected' : ''}>${esc(tripName(v))}${v.trip.depart ? ' · ' + esc(fdate(v.trip.depart)) : ''}${/Terminé|Annulé/.test(v.trip.statut || '') ? ' (' + esc(v.trip.statut.toLowerCase()) + ')' : ''}</option>`).join('')}</select>
+      <button class="editlink" data-tab="voyages">Tous les voyages (${vs.length})</button>
+      <button class="editlink" data-act="newtrip">+ Nouveau voyage</button>
+    </div>
+    <div class="eyebrow">${esc([t.statut, t.categorie].filter(Boolean).join(' · ') || 'Carnet de déplacement')}</div>
     <h1>${esc(t.nom || 'Nouveau déplacement')}</h1>
     <div class="meta">${[t.destination, t.depart && (fdate(t.depart) + (t.retour ? ' → ' + fdate(t.retour) : ''))].filter(Boolean).map(esc).join(' · ') || 'Destination et dates à renseigner'}</div>
     <button class="editlink" data-act="trip">Modifier le déplacement</button>
-    <button class="editlink" data-act="settings" title="Réglages de sauvegarde">${sync === 'ok' ? '● ' : sync === 'error' || sync === 'cle' ? '⚠ ' : '○ '}${esc(syncLabel())}</button>`;
+    <button class="editlink" data-act="lien">${t.lien ? '🔗 Lien parents actif' : '🔗 Lien parents'}</button>
+    <button class="editlink" data-act="settings" title="Réglages de sauvegarde">${sync === 'ok' ? '● ' : sync === 'error' || sync === 'cle' || sync === 'script' ? '⚠ ' : '○ '}${esc(syncLabel())}</button>`;
   let cd = '';
   if (t.depart) {
     const d = Math.round((new Date(t.depart + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 864e5);
@@ -479,7 +668,7 @@ function draw(){
   $('#countdown').innerHTML = cd;
   const counts = {enfants:c.kids.length, parents:S.parents.length, hebergement:S.hebergements.length, transport:S.vehicules.length, taches:S.taches.filter(x => !x.fait).length};
   $('#tabs').innerHTML = TABS.map(([id, l]) => `<button role="tab" data-tab="${id}" aria-selected="${tab === id}">${l}${counts[id] ? `<span class="n">${counts[id]}</span>` : ''}</button>`).join('');
-  const V = {apercu, enfants:vEnfants, parents:vParents, hebergement:vHeb, transport:vTransport, budget:vBudget, taches:vTaches}[tab] || apercu;
+  const V = {voyages:vVoyages, apercu, enfants:vEnfants, parents:vParents, hebergement:vHeb, transport:vTransport, budget:vBudget, taches:vTaches}[tab] || apercu;
   $('#main').innerHTML = banner() + V(c);
 }
 
@@ -487,6 +676,7 @@ function banner(){
   if (!cfg.url || !cfg.cle) return `<div class="banner"><span class="card yellow"></span><p><strong>Sauvegarde Google Sheets pas encore reliée.</strong> ${cfg.url ? 'L’adresse du script est déjà enregistrée : il reste à saisir votre clé secrète.' : 'Vos données restent pour l’instant dans ce navigateur uniquement.'}</p><button class="btn primary sm" data-act="settings">Relier à Google Sheets</button></div>`;
   if (sync === 'error') return `<div class="banner"><span class="card red"></span><p><strong>Google Sheets ne répond pas.</strong> Vos modifications sont gardées dans ce navigateur. Vérifiez votre connexion internet ou l’adresse du script.</p><button class="btn sm" data-act="push">Réessayer</button><button class="btn sm" data-act="settings">Réglages</button></div>`;
   if (sync === 'cle') return `<div class="banner"><span class="card red"></span><p><strong>Clé refusée.</strong> La clé saisie ne correspond pas à la ligne CLE du script Google.</p><button class="btn sm" data-act="settings">Corriger la clé</button></div>`;
+  if (sync === 'script') return `<div class="banner"><span class="card red"></span><p><strong>Mettez à jour le script Google.</strong> Ce carnet gère plusieurs voyages, mais le script de votre Google Sheet est l’ancienne version : rien n’est envoyé pour ne pas mélanger vos données, qui restent gardées dans ce navigateur. Remplacez le script par le nouveau fichier Code.gs, puis Déployer › Gérer les déploiements › Nouvelle version.</p><button class="btn sm" data-act="push">J’ai mis à jour, réessayer</button></div>`;
   return '';
 }
 
@@ -733,9 +923,10 @@ function showText(txt){
 }
 
 document.addEventListener('click', async e => {
-  const b = e.target.closest('[data-tab],[data-act],[data-close]');
+  const b = e.target.closest('[data-tab],[data-act],[data-close],[data-trip]');
   if (!b) { if (e.target.id === 'ov') closeForm(); return; }
   if (b.hasAttribute('data-close')) return closeForm();
+  if (b.dataset.trip) return setTrip(b.dataset.trip);
   if (b.dataset.tab) { tab = b.dataset.tab; try { history.replaceState(null, '', '#' + tab); } catch(_) {} render(); window.scrollTo({top:0}); return; }
   const {act, col, id, k} = b.dataset;
   if (act === 'trip') openForm('trip', null, S.trip);
@@ -748,10 +939,19 @@ document.addEventListener('click', async e => {
   else if (act === 'tpl') { const have = new Set(S.taches.map(t => t.tache)); for (const tk of TEMPLATE) if (!have.has(tk)) await put('taches', null, {tache:tk, echeance:'', responsable:'', fait:false}); toast('Liste type ajoutée.'); }
   else if (act === 'settings') openSettings();
   else if (act === 'bulk') openBulk();
+  else if (act === 'newtrip') openNewTrip();
+  else if (act === 'lien') openLien();
+  else if (act === 'mklien') { S.trip = {...S.trip, lien:jeton()}; changed(); openLien(); }
+  else if (act === 'rmlien') {
+    if (!b.dataset.armed) { b.dataset.armed = 1; b.textContent = 'Confirmer : l’ancien lien ne marchera plus'; return; }
+    S.trip = {...S.trip, lien:''}; changed(); closeForm(); toast('Lien parents désactivé.');
+  }
+  else if (act === 'cplien') copyOut(b.dataset.txt, 'Copié : collez-le dans le groupe des parents.');
   else if (act === 'push') { closeForm(); await pushSheets(); toast(syncLabel()); }
   else if (act === 'export') exportFile();
 });
 document.addEventListener('change', e => {
+  if (e.target.id === 'tripSel') return setTrip(e.target.value, tab === 'voyages' ? 'apercu' : tab);
   const s = e.target.closest('select.assign');
   if (s && s.value) { const it = find('enfants', s.value); if (it) patch('enfants', it, {[s.dataset.assign]: s.dataset.target}); }
 });
