@@ -116,7 +116,9 @@ h2{font-size:24px;font-weight:700}
 
 /* Pastilles d'état */
 .pill{display:inline-block;font-family:var(--f-mono);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:2px 8px;border-radius:999px;white-space:nowrap}
-.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.warn{background:var(--warn-soft);color:var(--warn)} .pill.bad{background:var(--bad-soft);color:var(--bad)}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.warn{background:var(--warn-soft);color:var(--warn)} .pill.bad{background:var(--bad-soft);color:var(--bad)} .pill.neutral{background:var(--sunk);color:var(--muted)}
+.pay{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.pay .name{font-weight:500;color:var(--accent)}
 .tog{border:0;border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
 .tog.on{background:var(--ok-soft);color:var(--ok)} .tog.off{background:var(--bad-soft);color:var(--bad)}
 .chips{display:flex;gap:4px;flex-wrap:wrap}
@@ -344,8 +346,8 @@ async function push(){
   clearTimeout(timer);
   const sent = rev; sync = 'saving'; render();
   try {
-    if (scriptV < 3) await getSheets();
-    if (scriptV < 3) { sync = 'script'; return render(); }  /* un ancien script perdrait des données */
+    if (scriptV < 4) await getSheets();
+    if (scriptV < 4) { sync = 'script'; return render(); }  /* un ancien script perdrait des données */
     const j = await (await fetch(SHEETS_URL, {method:'POST', body:JSON.stringify({cle:CLE, ...wire()})})).json();
     if (!j.ok) throw new Error(j.erreur || 'serveur');
     if (rev === sent) dirty = false;
@@ -363,7 +365,7 @@ async function pull(){
     const localVide = !ALL.voyages.some(v => v.trip.nom || COLS.some(c => v[c].length));
     if (vide && !localVide) return push();
     fromSheets(j); dirty = false; lastSync = new Date(); saveLocal();
-    sync = scriptV < 3 ? 'script' : 'ok';
+    sync = scriptV < 4 ? 'script' : 'ok';
   } catch(e) { sync = e.message === 'cle' ? 'cle' : 'error'; }
   render();
 }
@@ -373,6 +375,12 @@ function syncLabel(){
     error:'Google Sheets injoignable', cle:'Clé refusée par Google Sheets', script:'Script Google à mettre à jour'}[sync];
 }
 
+/* ===== Participation : qui paie ? =====
+   tarif '' = automatique (exonéré si son parent référent accompagne), 'due' = doit payer, 'exo' = exonéré */
+const parentAccompagne = (T, k) => !!(T.parents.find(p => p.id === k.parent) || {}).accompagne;
+const payeur = (T, k) => k.tarif === 'due' ? true : k.tarif === 'exo' ? false : !parentAccompagne(T, k);
+const raisonExo = (T, k) => k.tarif === 'exo' ? 'exonéré' : 'parent accompagnateur';
+
 /* ===== Calculs ===== */
 function calc(T){
   const kids = [...T.enfants].sort(byName);
@@ -381,11 +389,12 @@ function calc(T){
   const part = num(T.trip.participation);
   const dep = T.budget.filter(b => b.sens !== 'Recette'), rec = T.budget.filter(b => b.sens === 'Recette');
   const depHeb = sum(T.hebergements, h => num(h.cout)), depVeh = sum(T.vehicules, v => num(v.cout));
-  const attendu = part * kids.length;
+  const payeurs = kids.filter(k => payeur(T, k));
+  const attendu = part * payeurs.length;
   const depenses = sum(dep, b => num(b.montant)) + depHeb + depVeh;
   const recettes = sum(rec, b => num(b.montant)) + attendu;
   return {
-    kids, heb, veh, part, dep, depHeb, depVeh, attendu, depenses, recettes, solde: recettes - depenses,
+    kids, payeurs, exos: kids.length - payeurs.length, reste: sum(payeurs, k => Math.max(0, part - num(k.paye))), heb, veh, part, dep, depHeb, depVeh, attendu, depenses, recettes, solde: recettes - depenses,
     par: id => T.parents.find(p => p.id === id),
     noHeb: kids.filter(k => !heb(k.hebergement)),
     noVeh: kids.filter(k => !veh(k.vehicule)),
@@ -410,7 +419,7 @@ function alertsFor(T, c){
   for (const [k, l] of [['autorisation', 'autorisation(s) parentale(s) manquante(s)'], ['fiche', 'fiche(s) sanitaire(s) manquante(s)'], ['licence', 'licence(s) ou pièce(s) d’identité à vérifier']]) {
     const m = c.kids.filter(x => !x[k]); if (m.length) a.push(['warn', `${m.length} ${l}`, names(m), 'enfants']);
   }
-  if (c.part) { const r = c.kids.filter(k => num(k.paye) < c.part); if (r.length) a.push(['warn', `${r.length} famille(s) n’ont pas tout payé`, `Reste à encaisser : ${eur(c.attendu - c.encaisse)}`, 'enfants']); }
+  if (c.part) { const r = c.payeurs.filter(k => num(k.paye) < c.part); if (r.length) a.push(['warn', `${r.length} famille(s) n’ont pas tout payé`, `Reste à encaisser : ${eur(c.reste)}`, 'enfants']); }
   for (const sens of ['Aller', 'Retour']) {
     const g = legOf(T, sens).gaps.filter(x => x > ROUTE_MAX);
     if (g.length) a.push(['warn', `${sens} : ${dur(Math.max(...g))} de route sans pause`, 'Prévoyez une pause environ toutes les 2 heures.', 'transport']);
@@ -465,6 +474,7 @@ const F = {
     {k:'autorisation', l:'Autorisation parentale signée', t:'check'},
     {k:'fiche', l:'Fiche sanitaire reçue', t:'check'},
     {k:'licence', l:'Licence / pièce d’identité vérifiée', t:'check'},
+    {k:'tarif', l:'Participation', t:'select', noEmpty:1, o:() => [{v:'', l:'Automatique : exonéré si son parent accompagne'}, {v:'due', l:'Doit payer la participation'}, {v:'exo', l:'Exonéré de participation'}]},
     {k:'paye', l:'Montant déjà payé (€)', t:'number', half:1}, {k:'maillot', l:'Taille de tenue', half:1},
     {k:'hebergement', l:'Hébergement', t:'select', o:optHeb, half:1}, {k:'vehicule', l:'Transport', t:'select', o:optVeh, half:1},
     {k:'sante', l:'Santé : allergies, traitement, régime', t:'textarea'},
@@ -593,7 +603,7 @@ function openNewTrip(){
     if (src) {
       const ids = {};
       v.parents = src.parents.map(p => { ids[p.id] = newId(); return {...p, id:ids[p.id], accompagne:false, hebergement:''}; });
-      v.enfants = src.enfants.map(k => ({...k, id:newId(), parent:ids[k.parent] || '', categorie:k.categorie || cat, autorisation:false, paye:'', hebergement:'', vehicule:''}));
+      v.enfants = src.enfants.map(k => ({...k, id:newId(), parent:ids[k.parent] || '', categorie:k.categorie || cat, autorisation:false, paye:'', tarif:'', hebergement:'', vehicule:''}));
       v.trip.urgence = src.trip.urgence || '';
     }
     if ($('#n_tpl').checked) v.taches = TEMPLATE.map(t => ({id:newId(), tache:t, echeance:'', responsable:'', fait:false}));
@@ -648,7 +658,7 @@ function openBulk(){
     e.preventDefault();
     const fresh = compute(), cat = $('#b_cat').value;
     fresh.forEach(k => S.enfants.push({id:newId(), prenom:k.prenom, nom:k.nom, categorie:k.categorie || cat, naissance:'', parent:'',
-      autorisation:false, fiche:false, licence:false, paye:'', maillot:'', hebergement:'', vehicule:'', sante:'', notes:''}));
+      autorisation:false, fiche:false, licence:false, paye:'', tarif:'', maillot:'', hebergement:'', vehicule:'', sante:'', notes:''}));
     closeForm(); changed(); toast(`${fresh.length} enfant(s) ajouté(s). Complétez leurs fiches quand vous aurez les infos.`);
   };
 }
@@ -805,14 +815,14 @@ const tog = (item, col, k, label) => `<button class="tog ${item[k] ? 'on' : 'off
 
 function vEnfants(c){
   const add = `<button class="btn" data-act="bulk">Ajouter une liste</button><button class="btn primary" data-act="add" data-col="enfants">Ajouter un enfant</button>`;
-  const head = pageHead('Enfants', `${c.kids.length} inscrit(s) · cliquez sur un nom pour compléter la fiche, sur un document pour le cocher`, add);
+  const head = pageHead('Enfants', `${c.kids.length} inscrit(s) · ${c.payeurs.length} participation(s) due(s), ${c.exos} exonéré(s)${c.part ? ` · reste à encaisser ${eur(c.reste)}` : ''}`, add);
   if (!c.kids.length) return head + empty('Aucun enfant inscrit', 'Collez la liste de vos joueurs d’un coup, puis complétez documents, paiement, voiture et chambre au fur et à mesure.', add);
-  return head + `<div class="tw"><table><thead><tr><th>Enfant</th><th>Documents</th><th class="num">Payé</th><th>Hébergement</th><th>Transport</th><th>Parent</th></tr></thead><tbody>${c.kids.map(k => {
-    const p = num(k.paye), st = !c.part ? '' : p >= c.part ? 'ok' : p > 0 ? 'warn' : 'bad';
+  return head + `<div class="tw"><table><thead><tr><th>Enfant</th><th>Documents</th><th>Participation</th><th>Hébergement</th><th>Transport</th><th>Parent</th></tr></thead><tbody>${c.kids.map(k => {
+    const p = num(k.paye), doit = payeur(S, k), st = !doit ? 'neutral' : !c.part ? '' : p >= c.part ? 'ok' : p > 0 ? 'warn' : 'bad';
     const h = c.heb(k.hebergement), v = c.veh(k.vehicule), pa = c.par(k.parent);
     return `<tr><td><button class="name" data-act="edit" data-col="enfants" data-id="${k.id}">${esc(full(k))}</button>${k.categorie ? `<span class="tag">${esc(k.categorie)}</span>` : ''}${k.sante ? `<div class="small">Santé : ${esc(k.sante.length > 40 ? k.sante.slice(0, 40) + '…' : k.sante)}</div>` : ''}</td>
       <td><div class="chips">${tog(k, 'enfants', 'autorisation', 'Autorisation')}${tog(k, 'enfants', 'fiche', 'Fiche sanitaire')}${tog(k, 'enfants', 'licence', 'Licence')}</div></td>
-      <td class="num">${st ? `<span class="pill ${st}">${eur(p)} / ${eur(c.part)}</span>` : eur(p)}</td>
+      <td><div class="pay">${!doit ? `<span class="pill neutral">Exonéré</span><span class="small">${raisonExo(S, k)}</span>` : st ? `<span class="pill ${st}">${eur(p)} / ${eur(c.part)}</span>` : `<span class="mono">${eur(p)} payé</span>`}<button class="name small" data-act="tarif" data-id="${k.id}">${doit ? 'Exonérer' : 'Faire payer'}</button></div></td>
       <td>${h ? esc(h.nom) : '<span class="miss">Non affecté</span>'}</td>
       <td>${v ? esc(v.nom) : '<span class="miss">Non affecté</span>'}</td>
       <td>${pa ? esc(full(pa)) + (pa.telephone ? `<div class="small mono">${esc(pa.telephone)}</div>` : '') : '<span class="small">—</span>'}</td></tr>`;
@@ -896,14 +906,14 @@ function vBudget(c){
   const rows = [
     ...S.hebergements.filter(h => num(h.cout)).map(h => auto(h.nom, 'Hébergement', '−' + eur(num(h.cout)), '<span class="small">auto</span>')),
     ...S.vehicules.filter(v => num(v.cout)).map(v => auto(v.nom, 'Transport', '−' + eur(num(v.cout)), '<span class="small">auto</span>')),
-    ...(c.attendu ? [auto(`Participations (${c.kids.length} × ${eur(c.part)})`, 'Recette', '+' + eur(c.attendu), `<span class="pill ${c.encaisse >= c.attendu ? 'ok' : 'warn'}">${eur(c.encaisse)} reçus</span>`)] : []),
+    ...(c.attendu ? [auto(`Participations (${c.payeurs.length} × ${eur(c.part)}${c.exos ? `, ${c.exos} exonéré(s)` : ''})`, 'Recette', '+' + eur(c.attendu), `<span class="pill ${c.encaisse >= c.attendu ? 'ok' : 'warn'}">${eur(c.encaisse)} reçus</span>`)] : []),
     ...lines.map(b => `<tr><td><button class="name" data-act="edit" data-col="budget" data-id="${b.id}">${esc(b.libelle)}</button></td><td>${esc(b.categorie || '—')}</td><td class="num mono">${b.sens === 'Recette' ? '+' : '−'}${eur(num(b.montant))}</td><td>${tog(b, 'budget', 'regle', b.sens === 'Recette' ? 'Encaissé' : 'Réglé')}</td></tr>`)
   ];
   return pageHead('Budget', 'Les coûts d’hébergement et de transport sont repris automatiquement', `<button class="btn primary" data-act="add" data-col="budget">Ajouter une ligne</button>`) + `<div class="stats">
     <div class="stat"><div class="k">Dépenses</div><div class="v">${eur(c.depenses)}</div><div class="d">${c.kids.length ? eur(c.depenses / c.kids.length) + ' par enfant' : '—'}</div></div>
     <div class="stat"><div class="k">Recettes</div><div class="v">${eur(c.recettes)}</div><div class="d">dont familles ${eur(c.attendu)}</div></div>
     <div class="stat"><div class="k">Solde prévu</div><div class="v ${c.solde < 0 ? 'bad' : 'good'}">${eur(c.solde)}</div><div class="d">${c.solde < 0 && c.kids.length ? `+${eur(Math.ceil(-c.solde / c.kids.length))} par enfant pour équilibrer` : 'recettes − dépenses'}</div></div>
-    <div class="stat"><div class="k">Encaissé familles</div><div class="v">${eur(c.encaisse)}</div><div class="d">sur ${eur(c.attendu)} attendus</div></div></div>
+    <div class="stat"><div class="k">Encaissé familles</div><div class="v">${eur(c.encaisse)}</div><div class="d">sur ${eur(c.attendu)} attendus · ${c.exos} exonéré(s)</div></div></div>
   <div class="cols"><div class="panel flush">${rows.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Libellé</th><th>Catégorie</th><th class="num">Montant</th><th>État</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : `<p class="sub" style="padding:18px">Aucune ligne : ajoutez l’inscription au tournoi, les repas, les subventions ou les sponsors.</p>`}</div>
   <div class="panel"><h3>Où va l’argent</h3>${entries.length ? entries.map(([k, v]) => `<div class="cat"><span>${esc(k)}</span><span class="b"><i style="width:${v / max * 100}%"></i></span><span class="num mono">${eur(v)}</span></div>`).join('') : '<p class="sub">Aucune dépense saisie.</p>'}
     <p class="sub" style="margin-top:14px">Participation par enfant : ${c.part ? eur(c.part) : 'non fixée'} · <button class="btn sm" data-act="trip">Modifier</button></p></div></div>`;
@@ -934,6 +944,7 @@ document.addEventListener('click', e => {
     toggle: () => { const it = find(col, id); if (it) patch(col, it, {[k]: !it[k]}); },
     unassign: () => { const it = find('enfants', id); if (it) patch('enfants', it, {[k]: ''}); },
     mkveh: () => { const p = find('parents', id); if (p) put('vehicules', null, {nom:'Voiture de ' + full(p), type:'Voiture de parent', conducteur:p.id, places:num(p.places), cout:'', rdv:'', notes:''}); },
+    tarif: () => { const k = find('enfants', id); if (!k) return; const veut = payeur(S, k) ? 'exo' : 'due', auto = parentAccompagne(S, k) ? 'exo' : 'due'; patch('enfants', k, {tarif: veut === auto ? '' : veut}); },
     tpl: () => { const have = new Set(S.taches.map(t => t.tache)); TEMPLATE.filter(t => !have.has(t)).forEach(t => S.taches.push({id:newId(), tache:t, echeance:'', responsable:'', fait:false})); changed(); toast('Liste type ajoutée.'); },
     bulk: openBulk, newtrip: openNewTrip, lien: openLien, save: openSave, export: exportFile,
     repart: () => repartition(b.dataset.what),
