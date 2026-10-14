@@ -171,6 +171,25 @@ select.assign{border:1px dashed var(--line);background:none;border-radius:8px;pa
 .cat .b i{display:block;height:100%;background:var(--accent);border-radius:5px}
 .auto{color:var(--muted);font-style:italic}
 
+/* Trajet */
+.legs{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px}
+.leg{min-width:0;display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.leg-h{display:flex;gap:10px;align-items:baseline}
+.leg-h h3{margin:0;font-size:16px;text-transform:uppercase;letter-spacing:.06em}
+.route{list-style:none;margin:0;padding:0;width:100%}
+.route li{display:grid;grid-template-columns:104px 22px minmax(0,1fr);gap:0 10px;align-items:start}
+.route .t{font-size:13px;padding-top:1px;text-align:right}
+.route .node{width:12px;height:12px;border-radius:50%;border:2px solid var(--accent);background:var(--surface);margin:4px auto 0;position:relative;z-index:1}
+.route .end .node{background:var(--accent)}
+.route .stop{padding:2px 0}
+.route .stop small{display:block;color:var(--muted);font-size:13px}
+.route .stop a{color:var(--accent)}
+.route .drive{color:var(--muted);font-size:12px;font-family:var(--f-mono)}
+.route .drive .line{width:2px;background:var(--line);margin:0 auto;height:100%;min-height:26px}
+.route .drive span:last-child{padding:5px 0}
+.route .drive.long{color:var(--warn)}
+.route .drive.long .line{background:var(--warn)}
+
 /* Tâches */
 .task{display:flex;gap:12px;align-items:center;padding:11px 18px;border-top:1px solid var(--line)}
 .task:first-child{border-top:0}
@@ -245,7 +264,7 @@ const newId = () => 'id' + Date.now().toString(36) + Math.random().toString(36).
 const strip = o => { const {id, ...r} = o || {}; return r; };
 
 /* ===== Listes ===== */
-const COLS = ['enfants','parents','hebergements','vehicules','budget','taches'];
+const COLS = ['enfants','parents','hebergements','vehicules','budget','taches','pauses'];
 const STATUTS = ['En préparation','Confirmé','Terminé','Annulé'];
 const CATS = ['U7','U9','U11','U13','U15','U17','U19','Seniors','Autre'];
 const TABS = [['apercu','Vue d’ensemble'],['enfants','Enfants'],['parents','Parents'],['hebergement','Hébergement'],['transport','Transport'],['budget','Budget'],['taches','À faire']];
@@ -325,8 +344,8 @@ async function push(){
   clearTimeout(timer);
   const sent = rev; sync = 'saving'; render();
   try {
-    if (scriptV < 2) await getSheets();
-    if (scriptV < 2) { sync = 'script'; return render(); }  /* l'ancien script mélangerait les voyages */
+    if (scriptV < 3) await getSheets();
+    if (scriptV < 3) { sync = 'script'; return render(); }  /* un ancien script perdrait des données */
     const j = await (await fetch(SHEETS_URL, {method:'POST', body:JSON.stringify({cle:CLE, ...wire()})})).json();
     if (!j.ok) throw new Error(j.erreur || 'serveur');
     if (rev === sent) dirty = false;
@@ -344,7 +363,7 @@ async function pull(){
     const localVide = !ALL.voyages.some(v => v.trip.nom || COLS.some(c => v[c].length));
     if (vide && !localVide) return push();
     fromSheets(j); dirty = false; lastSync = new Date(); saveLocal();
-    sync = scriptV < 2 ? 'script' : 'ok';
+    sync = scriptV < 3 ? 'script' : 'ok';
   } catch(e) { sync = e.message === 'cle' ? 'cle' : 'error'; }
   render();
 }
@@ -392,9 +411,35 @@ function alertsFor(T, c){
     const m = c.kids.filter(x => !x[k]); if (m.length) a.push(['warn', `${m.length} ${l}`, names(m), 'enfants']);
   }
   if (c.part) { const r = c.kids.filter(k => num(k.paye) < c.part); if (r.length) a.push(['warn', `${r.length} famille(s) n’ont pas tout payé`, `Reste à encaisser : ${eur(c.attendu - c.encaisse)}`, 'enfants']); }
+  for (const sens of ['Aller', 'Retour']) {
+    const g = legOf(T, sens).gaps.filter(x => x > ROUTE_MAX);
+    if (g.length) a.push(['warn', `${sens} : ${dur(Math.max(...g))} de route sans pause`, 'Prévoyez une pause environ toutes les 2 heures.', 'transport']);
+  }
   if (c.lateTasks.length) a.push(['warn', `${c.lateTasks.length} tâche(s) en retard`, c.lateTasks.slice(0, 3).map(t => t.tache).join(', '), 'taches']);
   if (n && !c.accomp.length) a.push(['warn', 'Aucun adulte accompagnateur', 'Indiquez quels parents accompagnent le groupe.', 'parents']);
   return a;
+}
+
+/* ===== Trajet aller / retour et pauses ===== */
+const toMin = h => { const m = /^(\d{1,2}):(\d{2})/.exec(h || ''); return m ? +m[1] * 60 + +m[2] : null; };
+const fromMin = m => String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+const dur = m => m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + String(m % 60).padStart(2, '0') : ''}` : `${m} min`;
+const ROUTE_MAX = 135; /* au-delà de 2 h 15 sans arrêt, le carnet conseille une pause */
+const mapUrl = q => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
+/* Étapes d'un trajet dans l'ordre, avec le temps de route entre chaque arrêt */
+function legOf(T, sens){
+  const t = T.trip, aller = sens === 'Aller';
+  const pts = [{kind:'dep', heure: aller ? t.heure_aller : t.heure_retour, lieu: aller ? t.rdv : t.destination}];
+  T.pauses.filter(p => p.sens === sens).sort((a, b) => (a.heure || '99').localeCompare(b.heure || '99')).forEach(p => pts.push({kind:'pause', heure:p.heure, lieu:p.lieu, p}));
+  pts.push({kind:'arr', heure: aller ? t.arrivee_aller : t.arrivee_retour, lieu: aller ? t.destination : t.rdv});
+  const gaps = [];
+  for (let i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1], a = toMin(prev.heure), b = toMin(pts[i].heure);
+    const end = a === null ? null : a + (prev.p ? num(prev.p.duree) : 0);
+    const g = end === null || b === null ? null : (b - end + 1440) % 1440;
+    pts[i].route = g; if (g !== null) gaps.push(g);
+  }
+  return {pts, gaps, date: aller ? t.depart : t.retour, nb: pts.length - 2};
 }
 
 /* ===== Formulaires ===== */
@@ -407,6 +452,8 @@ const F = {
     {k:'statut', l:'Statut', t:'select', o:() => STATUTS, half:1, noEmpty:1},
     {k:'destination', l:'Destination', half:1}, {k:'categorie', l:'Équipe / catégorie', half:1, ph:'U11'},
     {k:'depart', l:'Date de départ', t:'date', half:1}, {k:'retour', l:'Date de retour', t:'date', half:1},
+    {k:'heure_aller', l:'Aller : heure de départ', t:'time', half:1}, {k:'arrivee_aller', l:'Aller : arrivée prévue', t:'time', half:1},
+    {k:'heure_retour', l:'Retour : heure de départ', t:'time', half:1}, {k:'arrivee_retour', l:'Retour : arrivée prévue', t:'time', half:1},
     {k:'rdv', l:'Rendez-vous de départ', ph:'Stade municipal, samedi 7h30'},
     {k:'participation', l:'Participation par enfant (€)', t:'number', half:1},
     {k:'urgence', l:'Contact d’urgence', half:1},
@@ -453,6 +500,12 @@ const F = {
     {k:'montant', l:'Montant (€)', t:'number', half:1},
     {k:'regle', l:'Réglé / encaissé', t:'check'},
     {k:'notes', l:'Notes', t:'textarea'}]},
+  pauses: {title:'une pause', fields:[
+    {k:'sens', l:'Trajet', t:'select', o:() => ['Aller','Retour'], half:1, noEmpty:1},
+    {k:'type', l:'Type', t:'select', o:() => ['Pause','Repas','Carburant','Point de regroupement'], half:1, noEmpty:1},
+    {k:'heure', l:'Heure d’arrivée à la pause', t:'time', half:1, req:1}, {k:'duree', l:'Durée (minutes)', t:'number', half:1, ph:'20'},
+    {k:'lieu', l:'Lieu', req:1, ph:'Aire de la Chaponnière, A11'},
+    {k:'notes', l:'Notes (pique-nique, toilettes…)', t:'textarea'}]},
   taches: {title:'une tâche', fields:[
     {k:'tache', l:'À faire', req:1},
     {k:'echeance', l:'Échéance', t:'date', half:1}, {k:'responsable', l:'Responsable', half:1},
@@ -481,8 +534,8 @@ function modal(title, body, foot, formId){
 const formError = msg => { const e = $('#ferr'); e.textContent = msg; e.hidden = false; };
 function closeForm(){ $('#ov').hidden = true; $('#ov').innerHTML = ''; }
 
-function openForm(kind, item){
-  const sch = F[kind], isTrip = kind === 'trip', data = isTrip ? S.trip : item || (kind === 'budget' ? {sens:'Dépense'} : {});
+function openForm(kind, item, preset){
+  const sch = F[kind], isTrip = kind === 'trip', data = isTrip ? S.trip : item || preset || (kind === 'budget' ? {sens:'Dépense'} : {});
   const delLabel = isTrip ? 'Supprimer ce voyage' : item ? 'Supprimer' : '';
   modal(`${isTrip || item ? 'Modifier' : 'Ajouter'} ${esc(sch.title)}`, sch.fields.map(f => fieldHtml(f, data)).join(''),
     `${delLabel ? `<button type="button" class="btn danger" id="delbtn">${delLabel}</button>` : ''}<span class="sp"></span>
@@ -657,6 +710,12 @@ function repartition(what){
   const c = calc(S), t = S.trip, out = [`${tripName(S)}${t.depart ? ' – ' + fdate(t.depart) : ''}`];
   if (what === 'veh') {
     if (t.rdv) out.push(`Rendez-vous : ${t.rdv}`);
+    for (const sens of ['Aller', 'Retour']) {
+      const L = legOf(S, sens);
+      if (!L.nb && !L.pts[0].heure) continue;
+      out.push('', `${sens === 'Aller' ? '➡️' : '⬅️'} ${sens}${L.date ? ' – ' + fdate(L.date) : ''}`,
+        ...L.pts.map(pt => `${pt.heure || '--:--'}  ${pt.kind === 'dep' ? 'Départ' : pt.kind === 'arr' ? 'Arrivée' : (pt.p.type || 'Pause') + (num(pt.p.duree) ? ' (' + dur(num(pt.p.duree)) + ')' : '')}${pt.lieu ? ' – ' + pt.lieu : ''}`));
+    }
     S.vehicules.forEach(v => { const d = c.par(v.conducteur); out.push('', `🚗 ${v.nom}${d ? ' (' + full(d) + (d.telephone ? ', ' + d.telephone : '') + ')' : ''}${v.rdv ? ' – ' + v.rdv : ''}`, ...c.kids.filter(k => k.vehicule === v.id).map(k => '• ' + full(k))); });
     if (c.noVeh.length) out.push('', 'Sans place : ' + c.noVeh.map(full).join(', '));
   } else {
@@ -796,13 +855,33 @@ function vHeb(c){
   return head + unplaced(c.noHeb, 'sans hébergement') + `<div class="grid">${S.hebergements.map(h => slot(h, 'hebergements', 'hebergement', c.hebOcc(h), num(h.capacite),
     [h.type, h.cout ? eur(num(h.cout)) : ''].filter(Boolean).map(esc).join(' · '), S.parents.filter(p => p.hebergement === h.id))).join('')}</div>`;
 }
+function trajet(){
+  const legs = ['Aller', 'Retour'].map(sens => {
+    const L = legOf(S, sens);
+    const stop = pt => {
+      const icon = pt.kind === 'pause' ? 'pause' : 'end';
+      const title = pt.kind === 'dep' ? 'Départ' : pt.kind === 'arr' ? 'Arrivée' : `${esc(pt.p.type || 'Pause')}${num(pt.p.duree) ? ' · ' + dur(num(pt.p.duree)) : ''}`;
+      const until = pt.kind === 'pause' && toMin(pt.heure) !== null && num(pt.p.duree) ? ` → ${fromMin(toMin(pt.heure) + num(pt.p.duree))}` : '';
+      return `${pt.route != null ? `<li class="drive ${pt.route > ROUTE_MAX ? 'long' : ''}"><span></span><span class="line"></span><span>${dur(pt.route)} de route${pt.route > ROUTE_MAX ? ' · pause conseillée' : ''}</span></li>` : ''}
+        <li class="stop ${icon}"><span class="mono t">${pt.heure ? esc(pt.heure) + until : '<span class="miss">--:--</span>'}</span><span class="node"></span>
+        <div style="min-width:0"><b>${title}</b>${pt.lieu ? `<small>${esc(pt.lieu)} · <a href="${esc(mapUrl(pt.lieu))}" target="_blank" rel="noopener">carte</a></small>` : `<small class="miss">Lieu à renseigner</small>`}
+        ${pt.p ? `${pt.p.notes ? `<small>${esc(pt.p.notes)}</small>` : ''}<button class="name small" data-act="edit" data-col="pauses" data-id="${pt.p.id}">Modifier</button>` : ''}</div></li>`;
+    };
+    return `<div class="leg"><div class="leg-h"><h3>${sens}</h3><span class="small">${L.date ? esc(fdate(L.date)) : 'date à fixer'} · ${L.nb} pause(s)</span></div>
+      <ol class="route">${L.pts.map(stop).join('')}</ol>
+      <button class="btn sm" data-act="add" data-col="pauses" data-sens="${sens}">+ Pause ${sens.toLowerCase()}</button></div>`;
+  });
+  return `<div class="panel"><div class="bar-h" style="margin-bottom:14px"><div><h3 style="margin:0">Trajet et pauses</h3><p class="sub">Le même itinéraire pour tous les véhicules · lieux de départ et d’arrivée repris du voyage</p></div><div class="actions"><button class="btn sm" data-act="trip">Modifier les horaires</button></div></div>
+    <div class="legs">${legs.join('')}</div></div>`;
+}
 function vTransport(c){
   const dispo = S.parents.filter(p => p.conduit && !S.vehicules.some(v => v.conducteur === p.id));
   const add = `${S.vehicules.length ? '<button class="btn" data-act="repart" data-what="veh">Copier la répartition</button>' : ''}<button class="btn primary" data-act="add" data-col="vehicules">Ajouter un véhicule</button>`;
   const head = pageHead('Transport', `${c.places} places pour ${c.kids.length} enfants`, add);
   const drivers = dispo.length ? `<div class="notice"><p><strong>Conducteurs sans voiture créée :</strong> ${dispo.map(p => `${esc(full(p))} (${num(p.places)} places)`).join(', ')}</p>${dispo.map(p => `<button class="btn sm" data-act="mkveh" data-id="${p.id}">Voiture de ${esc(p.prenom || full(p))}</button>`).join('')}</div>` : '';
-  if (!S.vehicules.length) return head + drivers + empty('Aucun véhicule', 'Ajoutez les voitures des parents, le minibus du club ou le car, puis placez chaque enfant.', add);
-  return head + drivers + unplaced(c.noVeh, 'sans transport') + `<div class="grid">${S.vehicules.map(v => { const d = c.par(v.conducteur);
+  const route = trajet();
+  if (!S.vehicules.length) return head + route + drivers + empty('Aucun véhicule', 'Ajoutez les voitures des parents, le minibus du club ou le car, puis placez chaque enfant.', add);
+  return head + route + drivers + unplaced(c.noVeh, 'sans transport') + `<div class="grid">${S.vehicules.map(v => { const d = c.par(v.conducteur);
     return slot(v, 'vehicules', 'vehicule', c.vehOcc(v), num(v.places), [v.type, d && 'Conduit par ' + full(d), v.rdv].filter(Boolean).map(esc).join(' · ')); }).join('')}</div>`;
 }
 
@@ -850,7 +929,7 @@ document.addEventListener('click', e => {
   const {act, col, id, k} = b.dataset;
   const actions = {
     trip: () => openForm('trip'),
-    add: () => openForm(col),
+    add: () => openForm(col, null, b.dataset.sens ? {sens:b.dataset.sens} : null),
     edit: () => { const it = find(col, id); if (it) openForm(col, it); },
     toggle: () => { const it = find(col, id); if (it) patch(col, it, {[k]: !it[k]}); },
     unassign: () => { const it = find('enfants', id); if (it) patch('enfants', it, {[k]: ''}); },
